@@ -2,49 +2,41 @@
 
 MCP server for commerce-operations self-service. Lets an AI agent look up order details and search orders without needing developer or SQL access.
 
-**Live endpoint:** `https://mcp.chavanpatil.com/mcp`
+**Endpoint:** `https://mcp.chavanpatil.com/mcp`
 
-Connect any MCP client (Claude Desktop, Claude Code, a custom agent harness, or the [MCP Inspector](https://github.com/modelcontextprotocol/inspector)) to that URL to use the tools below.
+The server is already hosted. Point an MCP client at the endpoint above and it will discover and call the tools below.
 
-## Quick Start
+## Connecting an agent harness
 
-Requires **Node.js >= 22** (better-sqlite3 v13 requirement).
+### Claude Code CLI
 
 ```bash
-# Install deps
-npm install
-
-# Seed the database
-npm run seed
-
-# Run dev (auto-seeds via predev)
-npm run dev   # server on http://localhost:8003
+claude mcp add --transport http ecommerce-mcp https://mcp.chavanpatil.com/mcp
 ```
+
+Verify the connection:
+
+```bash
+claude mcp list
+```
+
+Then ask Claude to use the tools, e.g.:
+
+> Use the ecommerce-mcp tools to look up order ORD-001 and summarize it.
 
 ## MCP Tools
 
-- **`get_order(orderId)`** — Look up a single order by ID (e.g. `ORD-001`). Returns full details including items, tracking, and notes.
+- **`get_order(orderId)`** — Look up a single order by ID (e.g. `ORD-001`). Returns customer, items, status, tracking, and notes.
 - **`search_orders(filters)`** — Search orders by status, customer, email, date range. Optionally limit results.
 
-## Testing
+Example agent prompts:
 
-```bash
-npm test
-```
+- "Look up order ORD-003" → `get_order({orderId: "ORD-003"})`
+- "How many orders are pending?" → `search_orders({status: "pending"})`
 
-Brings up the server on a throwaway port and exercises `initialize`, `tools/list`, and both tools (found / not-found / filtered search cases).
+---
 
-## Development
-
-- TypeScript, `@modelcontextprotocol/sdk`, `better-sqlite3`
-- SQLite database at `data/orders.db` (synthetic data only; created on first `npm run seed`)
-- Streamable HTTP transport (`POST /mcp`), bound to `127.0.0.1`
-- `PORT` env var overrides the default port (`8003`)
-
-## What's In / Out of Scope
-
-- In: `get_order`, `search_orders`, synthetic order data, remote hosting
-- Out: Auth, frontend, inventory management, fulfillment tools, real payments, Docker
+All data is synthetic. The server is exposed over Streamable HTTP (JSON-RPC `POST /mcp`).
 
 ## License
 
