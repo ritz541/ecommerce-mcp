@@ -7,9 +7,10 @@ import { randomUUID } from "crypto";
 import path from "path";
 import { fileURLToPath } from "url";
 import { daysSince, evaluateRefundEligibility, type PaymentStatus, type CarrierStatus } from "./policy.js";
+import { seedDatabase } from "./seed.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const DB_PATH = path.resolve(__dirname, "..", "data", "orders.db");
+const DB_PATH = process.env.DB_PATH ?? path.resolve(__dirname, "..", "data", "orders.db");
 
 const ORDER_ID_RE = /^ORD-\d{3}$/;
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -462,4 +463,14 @@ app.get("/health", (req, res) => {
 });
 
 const PORT = Number(process.env.PORT ?? 8003);
+
+try {
+  const counts = seedDatabase(DB_PATH);
+  console.error(`[init] DB reseeded: ${counts.customers} customers, ${counts.orders} orders, ${counts.payments} payments, ${counts.refunds} refunds, ${counts.escalations} escalations, ${counts.audit_log} audit -> ${DB_PATH}`);
+} catch (err) {
+  const detail = err instanceof Error ? err.stack ?? err.message : String(err);
+  console.error(`[init] DB reseed failed: ${detail}`);
+  process.exit(1);
+}
+
 app.listen(PORT, "127.0.0.1", () => console.error(`MCP server on http://localhost:${PORT}/mcp`));

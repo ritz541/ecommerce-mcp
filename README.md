@@ -235,6 +235,22 @@ Example — after refunding `ORD-016`:
 ]
 ```
 
+## Demo order map
+
+The seed ships several orders that exercise each refund outcome, three per scenario. Use a fresh order each time you want to re-demo a path (no reset needed).
+
+| Scenario | Orders | `refund_order` result |
+|---|---|---|
+| Auto-eligible | `ORD-101` … `ORD-103` | `automatic` |
+| Over the $150 auto-refund limit | `ORD-201` … `ORD-203` | `escalated` (amount limit) |
+| Amount exceeds the paid amount | `ORD-301` … `ORD-303` | `escalated` (paid amount) |
+| Older than 30 days | `ORD-401` … `ORD-403` | `escalated` (age) |
+| High-risk customer | `ORD-501` … `ORD-503` | `escalated` (risk score) |
+| Carrier exception not verified | `ORD-601` … `ORD-603` | `escalated` (carrier status) |
+| Already refunded | `ORD-701` … `ORD-703` | `already_refunded` |
+
+Each escalation order fails exactly one rule, so `reasons` contains a single entry. See [`DATA.md`](DATA.md) for the schema, seed rationale, and why certain records look inconsistent.
+
 ---
 
 All data is synthetic. The server is exposed over Streamable HTTP (JSON-RPC `POST /mcp`).

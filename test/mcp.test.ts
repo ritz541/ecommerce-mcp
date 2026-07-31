@@ -1,6 +1,6 @@
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -8,6 +8,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, "..");
 const PORT = Number(process.env.TEST_PORT ?? 8399);
 const BASE = `http://127.0.0.1:${PORT}`;
+const TEST_DB = path.join(root, "data", "orders.test.db");
 const PROTOCOL_VERSION = "2025-06-18";
 
 let server: ChildProcess | null = null;
@@ -55,7 +56,7 @@ function startServer() {
   return new Promise<ChildProcess>((resolve, reject) => {
     const child = spawn("npx", ["tsx", "src/index.ts"], {
       cwd: root,
-      env: { ...process.env, PORT: String(PORT) },
+      env: { ...process.env, PORT: String(PORT), DB_PATH: TEST_DB },
       stdio: "ignore",
     });
     const timeout = setTimeout(
@@ -115,11 +116,6 @@ function parseResult(res: McpResponse): unknown {
 }
 
 before(async () => {
-  const result = spawnSync("npx", ["tsx", "src/seed.ts"], {
-    cwd: root,
-    stdio: "inherit",
-  });
-  assert.equal(result.status, 0, "seed failed");
   server = await startServer();
 });
 
@@ -235,8 +231,8 @@ test("search_orders offset beyond results returns empty array", async () => {
 test("search_orders offset pages deterministically (delivered, limit 1)", async () => {
   const page1 = parseResult(await callTool("search_orders", { status: "delivered", limit: 1, offset: 0 })) as OrderSummary[];
   const page2 = parseResult(await callTool("search_orders", { status: "delivered", limit: 1, offset: 1 })) as OrderSummary[];
-  assert.equal(page1[0].id, "ORD-015");
-  assert.equal(page2[0].id, "ORD-010");
+  assert.equal(page1[0].id, "ORD-603");
+  assert.equal(page2[0].id, "ORD-602");
 });
 
 test("get_order exposes refund eligibility and payment context", async () => {
@@ -338,4 +334,33 @@ test("get_audit_log returns pre-seeded history", async () => {
   const log = parseResult(await callTool("get_audit_log", { orderId: "ORD-014" })) as Array<{ action: string; outcome: string }>;
   assert.ok(log.length >= 1);
   assert.ok(log.some((e) => e.action === "refund.automatic" && e.outcome === "refunded"));
+});
+
+test("scenario families: each refund rule fails independently with one reason", async () => {
+  const cases: Array<[string, RegExp]> = [
+    ["ORD-201", /auto-refund limit/i],
+    ["ORD-301", /paid amount/i],
+    ["ORD-401", /days old/i],
+    ["ORD-501", /risk score/i],
+    ["ORD-601", /carrier exception/i],
+  ];
+  for (const [orderId, pattern] of cases) {
+    const res = parseResult(await callTool("refund_order", { orderId, reason: "Carrier reported damage in transit" })) as { ok: boolean; mode: string; reasons: string[] };
+    assert.equal(res.ok, true, `${orderId} should be handled`);
+    assert.equal(res.mode, "escalated", `${orderId} should escalate`);
+    assert.equal(res.reasons.length, 1, `${orderId} should fail exactly one rule`);
+    assert.ok(pattern.test(res.reasons[0]), `${orderId} should fail on ${pattern}`);
+  }
+});
+
+test("scenario families: auto-eligible and already-refunded orders", async () => {
+  const auto = parseResult(await callTool("refund_order", { orderId: "ORD-101", reason: "Carrier reported damage in transit" })) as { ok: boolean; mode: string; refundId: string };
+  assert.equal(auto.ok, true);
+  assert.equal(auto.mode, "automatic");
+  assert.match(auto.refundId, /^REF-[a-f0-9]{8}$/);
+
+  const done = parseResult(await callTool("refund_order", { orderId: "ORD-701", reason: "duplicate attempt" })) as { ok: boolean; mode: string; refund: { id: string } };
+  assert.equal(done.ok, true);
+  assert.equal(done.mode, "already_refunded");
+  assert.equal(done.refund.id, "REF-101");
 });
