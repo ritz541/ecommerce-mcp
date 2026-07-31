@@ -28,38 +28,47 @@ function main() {
   fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
   const db = new Database(DB_PATH);
 
-  db.exec(`DROP TABLE IF EXISTS orders;
-    CREATE TABLE orders (
-      id TEXT PRIMARY KEY,
-      customer TEXT NOT NULL,
-      email TEXT NOT NULL,
-      status TEXT NOT NULL CHECK(status IN ('pending', 'processing', 'shipped', 'delivered', 'cancelled')),
-      items TEXT NOT NULL,
-      total REAL NOT NULL,
-      created TEXT NOT NULL,
-      tracking TEXT,
-      notes TEXT
-    );`);
+  try {
+    db.exec(`DROP TABLE IF EXISTS orders;
+      CREATE TABLE orders (
+        id TEXT PRIMARY KEY,
+        customer TEXT NOT NULL,
+        email TEXT NOT NULL,
+        status TEXT NOT NULL CHECK(status IN ('pending', 'processing', 'shipped', 'delivered', 'cancelled')),
+        items TEXT NOT NULL,
+        total REAL NOT NULL,
+        created TEXT NOT NULL,
+        tracking TEXT,
+        notes TEXT
+      );`);
 
-  const insert = db.prepare(
-    `INSERT INTO orders (id, customer, email, status, items, total, created, tracking, notes)
-     VALUES (@id, @customer, @email, @status, @items, @total, @created, @tracking, @notes)`
-  );
+    const insert = db.prepare(
+      `INSERT INTO orders (id, customer, email, status, items, total, created, tracking, notes)
+       VALUES (@id, @customer, @email, @status, @items, @total, @created, @tracking, @notes)`
+    );
 
-  const insertMany = db.transaction((rows: typeof orders) => {
-    for (const row of rows) {
-      insert.run({
-        ...row,
-        items: JSON.stringify(row.items),
-      });
-    }
-  });
+    const insertMany = db.transaction((rows: typeof orders) => {
+      for (const row of rows) {
+        insert.run({
+          ...row,
+          items: JSON.stringify(row.items),
+        });
+      }
+    });
 
-  insertMany(orders);
+    insertMany(orders);
 
-  const count = db.prepare("SELECT COUNT(*) AS n FROM orders").get() as { n: number };
-  console.log(`Seeded ${count.n} orders into ${DB_PATH}`);
-  db.close();
+    const count = db.prepare("SELECT COUNT(*) AS n FROM orders").get() as { n: number };
+    console.log(`Seeded ${count.n} orders into ${DB_PATH}`);
+  } finally {
+    db.close();
+  }
 }
 
-main();
+try {
+  main();
+} catch (err) {
+  const detail = err instanceof Error ? err.stack ?? err.message : String(err);
+  console.error(`Seed failed: ${detail}`);
+  process.exit(1);
+}

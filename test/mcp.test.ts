@@ -178,6 +178,24 @@ test("get_order returns not found for unknown order", async () => {
   assert.match(data.message, /ORD-999 not found/i);
 });
 
+test("get_order rejects malformed order IDs", async () => {
+  const res = await callTool("get_order", { orderId: "abc" });
+  assert.equal(res.result.isError, true);
+  const data = parseResult(res) as { ok: boolean; message: string };
+  assert.equal(data.ok, false);
+  assert.match(data.message, /invalid orderid/i);
+});
+
+test("search_orders rejects malformed dates", async () => {
+  const badFrom = await callTool("search_orders", { dateFrom: "not-a-date" });
+  assert.equal(badFrom.result.isError, true);
+  assert.match((parseResult(badFrom) as { message: string }).message, /invalid dateFrom/i);
+
+  const badTo = await callTool("search_orders", { dateTo: "2026/07/01" });
+  assert.equal(badTo.result.isError, true);
+  assert.match((parseResult(badTo) as { message: string }).message, /invalid dateTo/i);
+});
+
 test("search_orders filters by status", async () => {
   const res = await callTool("search_orders", { status: "shipped" });
   const data = parseResult(res) as OrderSummary[];

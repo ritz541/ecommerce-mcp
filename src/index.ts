@@ -9,6 +9,9 @@ import { fileURLToPath } from "url";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DB_PATH = path.resolve(__dirname, "..", "data", "orders.db");
 
+const ORDER_ID_RE = /^ORD-\d{3}$/;
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
 interface OrderRow {
   id: string;
   customer: string;
@@ -74,6 +77,13 @@ function createMcpServer() {
     try {
       if (name === "get_order") {
         const orderId = typeof args.orderId === "string" ? args.orderId : String(args.orderId);
+        if (!ORDER_ID_RE.test(orderId)) {
+          return {
+            content: [{ type: "text", text: JSON.stringify({ ok: false, message: `Invalid orderId '${orderId}'. Expected format like ORD-001.` }) }],
+            isError: true,
+          };
+        }
+
         const db = getDb();
         const row = db.prepare(`SELECT id, customer, email, status, items, total, created, tracking, notes FROM orders WHERE id = ?`).get(orderId) as OrderRow | undefined;
         db.close();
@@ -85,12 +95,22 @@ function createMcpServer() {
           };
         }
 
+        let items: Array<{ name: string; qty: number; price: number }>;
+        try {
+          items = JSON.parse(row.items) as Array<{ name: string; qty: number; price: number }>;
+        } catch {
+          return {
+            content: [{ type: "text", text: JSON.stringify({ ok: false, message: `Order ${orderId} has corrupt item data.` }) }],
+            isError: true,
+          };
+        }
+
         const order = {
           id: row.id,
           customer: row.customer,
           email: row.email,
           status: row.status,
-          items: JSON.parse(row.items) as Array<{ name: string; qty: number; price: number }>,
+          items,
           total: row.total,
           created: row.created,
           tracking: row.tracking ?? null,
@@ -103,6 +123,21 @@ function createMcpServer() {
         const db = getDb();
         const clauses: string[] = [];
         const params: any[] = [];
+
+        if (typeof args.dateFrom === "string" && !DATE_RE.test(args.dateFrom)) {
+          db.close();
+          return {
+            content: [{ type: "text", text: JSON.stringify({ ok: false, message: `Invalid dateFrom '${args.dateFrom}'. Expected YYYY-MM-DD.` }) }],
+            isError: true,
+          };
+        }
+        if (typeof args.dateTo === "string" && !DATE_RE.test(args.dateTo)) {
+          db.close();
+          return {
+            content: [{ type: "text", text: JSON.stringify({ ok: false, message: `Invalid dateTo '${args.dateTo}'. Expected YYYY-MM-DD.` }) }],
+            isError: true,
+          };
+        }
 
         if (typeof args.status === "string") { clauses.push("status = ?"); params.push(args.status); }
         if (typeof args.customer === "string") { clauses.push("customer LIKE ?"); params.push(`%${args.customer}%`); }
