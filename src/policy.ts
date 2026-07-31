@@ -2,13 +2,16 @@ export const MAX_AUTO_REFUND_AMOUNT = 150;
 export const MAX_ORDER_AGE_DAYS = 30;
 export const MAX_RISK_SCORE = 70;
 
+export type PaymentStatus = "paid" | "pending" | "refunded" | "failed" | "unknown";
+export type CarrierStatus = "exception" | "delivered" | "in_transit" | "pending" | "not_shipped";
+
 export interface RefundEligibilityContext {
   orderAmount: number;
   paidAmount: number | null;
-  paymentStatus: string;
+  paymentStatus: PaymentStatus;
   orderAgeDays: number;
   riskScore: number;
-  carrierStatus: string;
+  carrierStatus: CarrierStatus;
   hasExistingRefund: boolean;
 }
 

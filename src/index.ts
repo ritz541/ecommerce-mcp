@@ -3,9 +3,10 @@ import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import Database from "better-sqlite3";
+import { randomUUID } from "crypto";
 import path from "path";
 import { fileURLToPath } from "url";
-import { daysSince, evaluateRefundEligibility } from "./policy.js";
+import { daysSince, evaluateRefundEligibility, type PaymentStatus, type CarrierStatus } from "./policy.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DB_PATH = path.resolve(__dirname, "..", "data", "orders.db");
@@ -90,6 +91,15 @@ function parseJson(s: string | null): unknown {
   try { return JSON.parse(s); } catch { return null; }
 }
 
+function parseStringArray(s: string | null): string[] | null {
+  const parsed = parseJson(s);
+  return Array.isArray(parsed) && parsed.every((x) => typeof x === "string") ? parsed as string[] : null;
+}
+
+function isUniqueConstraintError(err: unknown): boolean {
+  return err instanceof Error && (err as { code?: string }).code === "SQLITE_CONSTRAINT_UNIQUE";
+}
+
 function ok(data: unknown) {
   return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
 }
@@ -121,10 +131,10 @@ function computeEligibility(ctx: OrderContext) {
   return evaluateRefundEligibility({
     orderAmount: ctx.order.total,
     paidAmount: ctx.payment?.amount ?? null,
-    paymentStatus: ctx.payment?.status ?? "unknown",
+    paymentStatus: (ctx.payment?.status ?? "unknown") as PaymentStatus,
     orderAgeDays: ctx.orderAgeDays,
     riskScore: ctx.riskScore ?? 999,
-    carrierStatus: ctx.order.carrier_status,
+    carrierStatus: ctx.order.carrier_status as CarrierStatus,
     hasExistingRefund: ctx.refund !== null,
   });
 }
@@ -246,7 +256,7 @@ function createMcpServer() {
       if (name === "search_orders") {
         const db = getDb();
         const clauses: string[] = [];
-        const params: any[] = [];
+        const params: Array<string | number> = [];
 
         if (typeof args.dateFrom === "string" && !DATE_RE.test(args.dateFrom)) {
           db.close();
@@ -292,80 +302,106 @@ function createMcpServer() {
 
         const db = getWriteDb();
         try {
-          let ctx: OrderContext;
           try {
-            ctx = loadOrderContext(db, orderId);
+            loadOrderContext(db, orderId);
           } catch (e) {
             if (e instanceof OrderNotFoundError) return error(e.message);
             throw e;
           }
 
-          if (ctx.refund) {
-            return ok({
-              ok: true,
-              mode: "already_refunded",
-              orderId,
-              refund: { id: ctx.refund.id, amount: ctx.refund.amount, reason: ctx.refund.reason, created: ctx.refund.created },
-              message: "Order already refunded; no duplicate refund issued.",
-            });
-          }
+          const ts = new Date().toISOString();
 
-          if (ctx.escalation) {
+          const run = db.transaction((): ReturnType<typeof ok> => {
+            const current = loadOrderContext(db, orderId);
+
+            if (current.refund) {
+              return ok({
+                ok: true,
+                mode: "already_refunded",
+                orderId,
+                refund: { id: current.refund.id, amount: current.refund.amount, reason: current.refund.reason, created: current.refund.created },
+                message: "Order already refunded; no duplicate refund issued.",
+              });
+            }
+
+            if (current.escalation) {
+              return ok({
+                ok: true,
+                mode: "escalated",
+                orderId,
+                escalationId: current.escalation.id,
+                status: current.escalation.status,
+                reasons: parseStringArray(current.escalation.conditions) ?? [],
+                message: "Refund already flagged for manager approval; no new escalation created.",
+              });
+            }
+
+            const eligibility = computeEligibility(current);
+            const before = JSON.stringify(current.payment
+              ? { status: current.payment.status, amount: current.payment.amount, method: current.payment.method }
+              : null);
+
+            if (eligibility.canAutoRefund) {
+              const refundId = `REF-${randomUUID().replace(/-/g, "").slice(0, 8)}`;
+              const after = JSON.stringify({ paymentStatus: "refunded", refundId, amount: current.order.total });
+              db.prepare("INSERT INTO refunds (id, order_id, amount, reason, actor, created) VALUES (?, ?, ?, ?, ?, ?)").run(refundId, orderId, current.order.total, reason, "ops_agent", ts);
+              db.prepare("UPDATE payments SET status = 'refunded' WHERE order_id = ?").run(orderId);
+              db.prepare("INSERT INTO audit_log (ts, order_id, action, actor, reason, before, after, outcome) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run(ts, orderId, "refund.automatic", "ops_agent", reason, before, after, "refunded");
+              return ok({
+                ok: true,
+                mode: "automatic",
+                orderId,
+                refundId,
+                amount: current.order.total,
+                refundedAt: ts,
+                message: "Refund issued automatically.",
+              });
+            }
+
+            const escalationId = `ESC-${randomUUID().replace(/-/g, "").slice(0, 8)}`;
+            const conditions = JSON.stringify(eligibility.reasons);
+            const after = JSON.stringify({ escalationId, conditions: eligibility.reasons });
+            db.prepare("INSERT INTO escalations (id, order_id, reason, conditions, status, created) VALUES (?, ?, ?, ?, 'pending_approval', ?)").run(escalationId, orderId, reason, conditions, ts);
+            db.prepare("INSERT INTO audit_log (ts, order_id, action, actor, reason, before, after, outcome) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run(ts, orderId, "refund.escalated", "ops_agent", reason, before, after, "escalated");
             return ok({
               ok: true,
               mode: "escalated",
               orderId,
-              escalationId: ctx.escalation.id,
-              status: ctx.escalation.status,
-              reasons: parseJson(ctx.escalation.conditions) as string[],
-              message: "Refund already flagged for manager approval; no new escalation created.",
+              escalationId,
+              status: "pending_approval",
+              reasons: eligibility.reasons,
+              message: "Refund requires manager approval.",
             });
-          }
-
-          const eligibility = computeEligibility(ctx);
-          const now = new Date();
-          const ts = now.toISOString();
-          const before = JSON.stringify({ paymentStatus: ctx.payment?.status ?? null });
-
-          if (eligibility.canAutoRefund) {
-            const count = (db.prepare("SELECT COUNT(*) AS n FROM refunds").get() as { n: number }).n;
-            const refundId = `REF-${String(count + 1).padStart(3, "0")}`;
-            const after = JSON.stringify({ paymentStatus: "refunded", refundId });
-            const mutate = db.transaction(() => {
-              db.prepare("INSERT INTO refunds (id, order_id, amount, reason, actor, created) VALUES (?, ?, ?, ?, ?, ?)").run(refundId, orderId, ctx.order.total, reason, "ops_agent", ts);
-              db.prepare("UPDATE payments SET status = 'refunded' WHERE order_id = ?").run(orderId);
-              db.prepare("INSERT INTO audit_log (ts, order_id, action, actor, reason, before, after, outcome) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run(ts, orderId, "refund.automatic", "ops_agent", reason, before, after, "refunded");
-            });
-            mutate();
-            return ok({
-              ok: true,
-              mode: "automatic",
-              orderId,
-              refundId,
-              amount: ctx.order.total,
-              refundedAt: ts,
-              message: "Refund issued automatically.",
-            });
-          }
-
-          const escCount = (db.prepare("SELECT COUNT(*) AS n FROM escalations").get() as { n: number }).n;
-          const escalationId = `ESC-${String(escCount + 1).padStart(3, "0")}`;
-          const conditions = JSON.stringify(eligibility.reasons);
-          const after = JSON.stringify({ escalationId, conditions: eligibility.reasons });
-          const mutate = db.transaction(() => {
-            db.prepare("INSERT INTO escalations (id, order_id, reason, conditions, status, created) VALUES (?, ?, ?, ?, 'pending_approval', ?)").run(escalationId, orderId, reason, conditions, ts);
-            db.prepare("INSERT INTO audit_log (ts, order_id, action, actor, reason, before, after, outcome) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run(ts, orderId, "refund.escalated", "ops_agent", reason, before, after, "escalated");
           });
-          mutate();
-          return ok({
-            ok: true,
-            mode: "escalated",
-            orderId,
-            escalationId,
-            status: "pending_approval",
-            reasons: eligibility.reasons,
-            message: "Refund requires manager approval.",
-          });
+
+          try {
+            return run();
+          } catch (e) {
+            if (isUniqueConstraintError(e)) {
+              const latest = loadOrderContext(db, orderId);
+              if (latest.refund) {
+                return ok({
+                  ok: true,
+                  mode: "already_refunded",
+                  orderId,
+                  refund: { id: latest.refund.id, amount: latest.refund.amount, reason: latest.refund.reason, created: latest.refund.created },
+                  message: "Order already refunded; no duplicate refund issued.",
+                });
+              }
+              if (latest.escalation) {
+                return ok({
+                  ok: true,
+                  mode: "escalated",
+                  orderId,
+                  escalationId: latest.escalation.id,
+                  status: latest.escalation.status,
+                  reasons: parseStringArray(latest.escalation.conditions) ?? [],
+                  message: "Refund already flagged for manager approval; no new escalation created.",
+                });
+              }
+            }
+            throw e;
+          }
         } finally {
           db.close();
         }

@@ -263,7 +263,7 @@ test("refund_order auto-refunds an eligible order, then is idempotent", async ()
   assert.equal(r1.mode, "automatic");
   assert.equal(r1.orderId, "ORD-016");
   assert.equal(r1.amount, 49.99);
-  assert.match(r1.refundId, /^REF-\d{3}$/);
+  assert.match(r1.refundId, /^REF-[a-f0-9]{8}$/);
 
   const retry = parseResult(await callTool("refund_order", { orderId: "ORD-016", reason: "Carrier reported damage in transit" })) as { ok: boolean; mode: string; refund: { id: string }; message: string };
   assert.equal(retry.ok, true);
@@ -281,8 +281,11 @@ test("refund_order auto-refunds an eligible order, then is idempotent", async ()
   assert.equal(order.refundEligibility.canAutoRefund, false);
   assert.ok(order.refundEligibility.reasons.some((r) => /already exists/i.test(r)));
 
-  const log = parseResult(await callTool("get_audit_log", { orderId: "ORD-016" })) as Array<{ action: string; outcome: string }>;
-  assert.ok(log.some((e) => e.action === "refund.automatic" && e.outcome === "refunded"));
+  const log = parseResult(await callTool("get_audit_log", { orderId: "ORD-016" })) as Array<{ action: string; outcome: string; after: { amount?: number; paymentStatus?: string } | null }>;
+  const refundEntry = log.find((e) => e.action === "refund.automatic" && e.outcome === "refunded");
+  assert.ok(refundEntry, "expected a refund.automatic audit entry");
+  assert.equal(refundEntry.after?.amount, 49.99);
+  assert.equal(refundEntry.after?.paymentStatus, "refunded");
 });
 
 test("refund_order escalates an order older than 30 days", async () => {
@@ -293,7 +296,7 @@ test("refund_order escalates an order older than 30 days", async () => {
   assert.equal(r1.mode, "escalated");
   assert.equal(r1.status, "pending_approval");
   assert.ok(r1.reasons.some((r) => /days old/i.test(r)));
-  assert.match(r1.escalationId, /^ESC-\d{3}$/);
+  assert.match(r1.escalationId, /^ESC-[a-f0-9]{8}$/);
 
   const retry = parseResult(await callTool("refund_order", { orderId: "ORD-017", reason: "Carrier reported damage in transit" })) as { ok: boolean; mode: string; escalationId: string; message: string };
   assert.equal(retry.mode, "escalated");
