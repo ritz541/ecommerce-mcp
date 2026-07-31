@@ -1,7 +1,6 @@
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -116,13 +115,11 @@ function parseResult(res: McpResponse): unknown {
 }
 
 before(async () => {
-  if (!existsSync(path.join(root, "data", "orders.db"))) {
-    const result = spawnSync("npx", ["tsx", "src/seed.ts"], {
-      cwd: root,
-      stdio: "inherit",
-    });
-    assert.equal(result.status, 0, "seed failed");
-  }
+  const result = spawnSync("npx", ["tsx", "src/seed.ts"], {
+    cwd: root,
+    stdio: "inherit",
+  });
+  assert.equal(result.status, 0, "seed failed");
   server = await startServer();
 });
 
@@ -240,4 +237,102 @@ test("search_orders offset pages deterministically (delivered, limit 1)", async 
   const page2 = parseResult(await callTool("search_orders", { status: "delivered", limit: 1, offset: 1 })) as OrderSummary[];
   assert.equal(page1[0].id, "ORD-015");
   assert.equal(page2[0].id, "ORD-010");
+});
+
+test("get_order exposes refund eligibility and payment context", async () => {
+  const data = parseResult(await callTool("get_order", { orderId: "ORD-016" })) as Record<string, unknown> & {
+    payment: { status: string };
+    riskScore: number;
+    carrierStatus: string;
+    orderAgeDays: number;
+    refundEligibility: { canAutoRefund: boolean; reasons: string[] };
+  };
+  assert.equal(data.payment.status, "paid");
+  assert.equal(typeof data.riskScore, "number");
+  assert.equal(data.carrierStatus, "exception");
+  assert.equal(typeof data.orderAgeDays, "number");
+  assert.equal(data.refundEligibility.canAutoRefund, true);
+  assert.deepEqual(data.refundEligibility.reasons, []);
+});
+
+test("refund_order auto-refunds an eligible order, then is idempotent", async () => {
+  const first = await callTool("refund_order", { orderId: "ORD-016", reason: "Carrier reported damage in transit" });
+  assert.equal(first.result.isError, undefined);
+  const r1 = parseResult(first) as { ok: boolean; mode: string; orderId: string; refundId: string; amount: number };
+  assert.equal(r1.ok, true);
+  assert.equal(r1.mode, "automatic");
+  assert.equal(r1.orderId, "ORD-016");
+  assert.equal(r1.amount, 49.99);
+  assert.match(r1.refundId, /^REF-\d{3}$/);
+
+  const retry = parseResult(await callTool("refund_order", { orderId: "ORD-016", reason: "Carrier reported damage in transit" })) as { ok: boolean; mode: string; refund: { id: string }; message: string };
+  assert.equal(retry.ok, true);
+  assert.equal(retry.mode, "already_refunded");
+  assert.equal(retry.refund.id, r1.refundId);
+  assert.match(retry.message, /no duplicate refund/i);
+
+  const order = parseResult(await callTool("get_order", { orderId: "ORD-016" })) as {
+    payment: { status: string };
+    refund: { id: string } | null;
+    refundEligibility: { canAutoRefund: boolean; reasons: string[] };
+  };
+  assert.equal(order.payment.status, "refunded");
+  assert.equal(order.refund?.id, r1.refundId);
+  assert.equal(order.refundEligibility.canAutoRefund, false);
+  assert.ok(order.refundEligibility.reasons.some((r) => /already exists/i.test(r)));
+
+  const log = parseResult(await callTool("get_audit_log", { orderId: "ORD-016" })) as Array<{ action: string; outcome: string }>;
+  assert.ok(log.some((e) => e.action === "refund.automatic" && e.outcome === "refunded"));
+});
+
+test("refund_order escalates an order older than 30 days", async () => {
+  const first = await callTool("refund_order", { orderId: "ORD-017", reason: "Carrier reported damage in transit" });
+  assert.equal(first.result.isError, undefined);
+  const r1 = parseResult(first) as { ok: boolean; mode: string; escalationId: string; status: string; reasons: string[]; message: string };
+  assert.equal(r1.ok, true);
+  assert.equal(r1.mode, "escalated");
+  assert.equal(r1.status, "pending_approval");
+  assert.ok(r1.reasons.some((r) => /days old/i.test(r)));
+  assert.match(r1.escalationId, /^ESC-\d{3}$/);
+
+  const retry = parseResult(await callTool("refund_order", { orderId: "ORD-017", reason: "Carrier reported damage in transit" })) as { ok: boolean; mode: string; escalationId: string; message: string };
+  assert.equal(retry.mode, "escalated");
+  assert.equal(retry.escalationId, r1.escalationId);
+  assert.match(retry.message, /no new escalation/i);
+
+  const log = parseResult(await callTool("get_audit_log", { orderId: "ORD-017" })) as Array<{ action: string; outcome: string }>;
+  assert.ok(log.some((e) => e.action === "refund.escalated" && e.outcome === "escalated"));
+});
+
+test("refund_order escalates high-risk customers", async () => {
+  const res = parseResult(await callTool("refund_order", { orderId: "ORD-018", reason: "Carrier reported damage in transit" })) as { ok: boolean; mode: string; reasons: string[] };
+  assert.equal(res.ok, true);
+  assert.equal(res.mode, "escalated");
+  assert.ok(res.reasons.some((r) => /risk score/i.test(r)));
+});
+
+test("refund_order reports pre-existing refunds", async () => {
+  const res = parseResult(await callTool("refund_order", { orderId: "ORD-014", reason: "duplicate attempt" })) as { ok: boolean; mode: string; refund: { id: string }; message: string };
+  assert.equal(res.ok, true);
+  assert.equal(res.mode, "already_refunded");
+  assert.equal(res.refund.id, "REF-001");
+  assert.match(res.message, /no duplicate refund/i);
+});
+
+test("refund_order requires a non-empty reason", async () => {
+  const res = await callTool("refund_order", { orderId: "ORD-016", reason: "   " });
+  assert.equal(res.result.isError, true);
+  assert.match((parseResult(res) as { message: string }).message, /reason is required/i);
+});
+
+test("refund_order rejects malformed order IDs", async () => {
+  const res = await callTool("refund_order", { orderId: "abc", reason: "test" });
+  assert.equal(res.result.isError, true);
+  assert.match((parseResult(res) as { message: string }).message, /invalid orderid/i);
+});
+
+test("get_audit_log returns pre-seeded history", async () => {
+  const log = parseResult(await callTool("get_audit_log", { orderId: "ORD-014" })) as Array<{ action: string; outcome: string }>;
+  assert.ok(log.length >= 1);
+  assert.ok(log.some((e) => e.action === "refund.automatic" && e.outcome === "refunded"));
 });
