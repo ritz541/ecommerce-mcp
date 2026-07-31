@@ -1,6 +1,6 @@
 # ecommerce-mcp
 
-MCP server for commerce-operations self-service. Lets an AI agent look up order details and search orders without needing developer or SQL access.
+MCP server for commerce-operations self-service. Lets an AI agent look up order details, search orders, and process refunds (with manager-approval escalation) without needing developer or SQL access.
 
 **Endpoint:** `https://mcp.chavanpatil.com/mcp`
 
@@ -26,7 +26,7 @@ Then ask Claude to use the tools, e.g.:
 
 ## MCP Tools
 
-Both tools return **structured JSON** (a JSON string in the MCP `text` content block). Tool results are the parsed JSON; never formatted prose.
+All tools return **structured JSON** (a JSON string in the MCP `text` content block). Tool results are the parsed JSON; never formatted prose.
 
 ### Conventions
 
@@ -34,7 +34,7 @@ Both tools return **structured JSON** (a JSON string in the MCP `text` content b
 - **Errors:** every error response is `{ "ok": false, "message": "..." }` with the MCP `isError` flag set to `true`. On success `isError` is unset.
 - **Unknown parameters:** unrecognized arguments are silently ignored (never an error).
 - **Sort order:** `search_orders` results are sorted by `created` descending, with `id` descending as a tiebreaker — the sort is deterministic and stable for pagination.
-- **IDs:** order IDs look like `ORD-001` (`^ORD-\d{3}$`).
+- **IDs:** order IDs look like `ORD-001` (`^ORD-\d{3}$`); refund IDs `REF-<hex>` and escalation IDs `ESC-<hex>` are generated per action.
 
 ### `get_order(orderId)`
 
@@ -121,6 +121,119 @@ Example — page 2 of shipped orders:
 ```
 
 No matches returns an empty array (not an error).
+
+### `refund_order(orderId, reason)`
+
+Process a refund request against the client's refund policy. Idempotent: retries never issue a duplicate refund or a duplicate escalation.
+
+| Param | Type | Required | Notes |
+|---|---|---|---|
+| `orderId` | string | yes | e.g. `ORD-016`, matches `^ORD-\d{3}$` |
+| `reason` | string | yes | non-empty; recorded in the audit log |
+
+The order is checked against the refund policy **automatically**. A refund is issued immediately only when **all** of these hold:
+
+- amount ≤ $150
+- amount ≤ the paid amount (payment captured as `paid`)
+- order created within the last 30 days
+- customer risk score below 70
+- the carrier exception is verified (`carrier_status` is `exception`)
+- no refund already exists for the order
+
+Otherwise the request is flagged for **manager approval** (an escalation is created) with the failing conditions listed as `reasons`.
+
+Response — `mode` is one of:
+
+| Field | Type | Notes |
+|---|---|---|
+| `ok` | boolean | always `true` on a handled outcome |
+| `mode` | string | `automatic` \| `escalated` \| `already_refunded` |
+| `refundId` / `escalationId` | string | only for `automatic` / `escalated` |
+| `amount` | number | only for `automatic` |
+| `refundedAt` | string | only for `automatic` (ISO timestamp) |
+| `reasons` | string[] | only for `escalated` — why auto-refund was denied |
+| `status` | string | only for `escalated` — `pending_approval` |
+| `refund` | object | only for `already_refunded` — the existing refund |
+
+Example — eligible order refunded automatically:
+
+```json
+{ "orderId": "ORD-016", "reason": "Damaged on delivery; carrier exception confirmed" }
+```
+
+```json
+{
+  "ok": true,
+  "mode": "automatic",
+  "orderId": "ORD-016",
+  "refundId": "REF-3f9a1c2d",
+  "amount": 49.99,
+  "refundedAt": "2026-07-31T14:02:11.000Z",
+  "message": "Refund issued automatically."
+}
+```
+
+Example — order too old, escalated to a manager:
+
+```json
+{ "orderId": "ORD-017", "reason": "Customer requests refund" }
+```
+
+```json
+{
+  "ok": true,
+  "mode": "escalated",
+  "orderId": "ORD-017",
+  "escalationId": "ESC-7b4e209a",
+  "status": "pending_approval",
+  "reasons": ["Order is older than the 30-day window", "Carrier exception is not verified"],
+  "message": "Refund requires manager approval."
+}
+```
+
+Re-running `refund_order` on the same order returns the existing outcome (`mode: "already_refunded"` or the same escalation) instead of creating a second record.
+
+### `get_audit_log(orderId)`
+
+Return the durable audit trail for an order — every refund/escalation action with before/after snapshots.
+
+| Param | Type | Required | Notes |
+|---|---|---|---|
+| `orderId` | string | yes | e.g. `ORD-016`, matches `^ORD-\d{3}$` |
+
+Response — a JSON array of audit entries, newest first:
+
+| Field | Type |
+|---|---|
+| `ts` | string (ISO timestamp) |
+| `orderId` | string |
+| `action` | string — `refund.automatic` / `refund.escalated` |
+| `actor` | string |
+| `reason` | string |
+| `before` | JSON string — payment snapshot before the action |
+| `after` | JSON string — outcome snapshot (e.g. `refundId`, amount, escalation reasons) |
+| `outcome` | string — `refunded` / `escalated` |
+
+Example — after refunding `ORD-016`:
+
+```json
+{ "orderId": "ORD-016" }
+```
+
+```json
+[
+  {
+    "ts": "2026-07-31T14:02:11.000Z",
+    "orderId": "ORD-016",
+    "action": "refund.automatic",
+    "actor": "ops_agent",
+    "reason": "Damaged on delivery; carrier exception confirmed",
+    "before": "{\"status\":\"paid\",\"amount\":49.99,\"method\":\"credit_card\"}",
+    "after": "{\"paymentStatus\":\"refunded\",\"refundId\":\"REF-3f9a1c2d\",\"amount\":49.99}",
+    "outcome": "refunded"
+  }
+]
+```
 
 ---
 
