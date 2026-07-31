@@ -52,11 +52,13 @@ interface OrderSummary {
   tracking: string | null;
 }
 
-function startServer() {
+function startServer(opts?: { port?: number; env?: Record<string, string> }) {
+  const port = opts?.port ?? PORT;
+  const base = `http://127.0.0.1:${port}`;
   return new Promise<ChildProcess>((resolve, reject) => {
-    const child = spawn("npx", ["tsx", "src/index.ts"], {
+    const child = spawn(process.execPath, ["--import", "tsx", "src/index.ts"], {
       cwd: root,
-      env: { ...process.env, PORT: String(PORT), DB_PATH: TEST_DB },
+      env: { ...process.env, PORT: String(port), DB_PATH: TEST_DB, ...opts?.env },
       stdio: "ignore",
     });
     const timeout = setTimeout(
@@ -69,7 +71,7 @@ function startServer() {
     });
     const poll = async () => {
       try {
-        const res = await fetch(`${BASE}/health`);
+        const res = await fetch(`${base}/health`);
         if (res.ok) {
           clearTimeout(timeout);
           resolve(child);
@@ -363,4 +365,33 @@ test("scenario families: auto-eligible and already-refunded orders", async () =>
   assert.equal(done.ok, true);
   assert.equal(done.mode, "already_refunded");
   assert.equal(done.refund.id, "REF-101");
+});
+
+test("rate limiter returns 429 after the configured max", async () => {
+  const limited = await startServer({ port: 9001, env: { RATE_LIMIT_MAX: "3", RATE_LIMIT_WINDOW_MS: "60000" } });
+  try {
+    const base = "http://127.0.0.1:9001";
+    const statuses: number[] = [];
+    let retryAfter: string | null = null;
+    for (let i = 0; i < 5; i++) {
+      const res = await fetch(`${base}/mcp`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Accept": "application/json, text/event-stream",
+          "MCP-Protocol-Version": PROTOCOL_VERSION,
+        },
+        body: JSON.stringify({ jsonrpc: "2.0", id: i + 1, method: "tools/list", params: {} }),
+      });
+      statuses.push(res.status);
+      if (res.status === 429) retryAfter = res.headers.get("retry-after");
+      await res.text();
+    }
+    assert.equal(statuses.filter((s) => s === 200).length, 3, "first three requests should pass");
+    assert.equal(statuses[3], 429, "fourth request should be rate limited");
+    assert.equal(statuses[4], 429, "fifth request should be rate limited");
+    assert.ok(retryAfter, "429 should carry a Retry-After header");
+  } finally {
+    limited.kill();
+  }
 });

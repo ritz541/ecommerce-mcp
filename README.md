@@ -36,6 +36,15 @@ All tools return **structured JSON** (a JSON string in the MCP `text` content bl
 - **Sort order:** `search_orders` results are sorted by `created` descending, with `id` descending as a tiebreaker — the sort is deterministic and stable for pagination.
 - **IDs:** order IDs look like `ORD-001` (`^ORD-\d{3}$`); refund IDs `REF-<hex>` and escalation IDs `ESC-<hex>` are generated per action.
 
+### Rate limiting
+
+The MCP endpoint is public, so `POST /mcp` is rate-limited per client IP to protect against abuse and runaway agent loops.
+
+- Default: **300 requests per minute** (`RATE_LIMIT_MAX`, `RATE_LIMIT_WINDOW_MS` ms).
+- Over the limit returns HTTP **429** with a `Retry-After` header and a JSON-RPC error body.
+- Configure via environment variables (e.g. inline `RATE_LIMIT_MAX=120 npm start`, or `Environment=RATE_LIMIT_MAX=120` in a systemd unit).
+- `GET /health` is intentionally not rate-limited (readiness polling).
+
 ### `get_order(orderId)`
 
 Look up a single order by ID.

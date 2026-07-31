@@ -1,4 +1,5 @@
 import express from "express";
+import { rateLimit } from "express-rate-limit";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
@@ -447,15 +448,33 @@ function createMcpServer() {
 const app = express();
 app.use(express.json());
 
-app.post("/mcp", async (req, res) => {
-  const server = createMcpServer();
-  const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
-  res.on("close", () => {
-    transport.close();
-    server.close();
-  });
-  await server.connect(transport);
-  await transport.handleRequest(req, res, req.body);
+const RATE_LIMIT_MAX = Math.max(1, Number(process.env.RATE_LIMIT_MAX) || 300);
+const RATE_LIMIT_WINDOW_MS = Math.max(1, Number(process.env.RATE_LIMIT_WINDOW_MS) || 60_000);
+
+const mcpLimiter = rateLimit({
+  windowMs: RATE_LIMIT_WINDOW_MS,
+  max: RATE_LIMIT_MAX,
+  standardHeaders: true,
+  legacyHeaders: false,
+  validate: { xForwardedForHeader: false },
+  message: { jsonrpc: "2.0", error: { code: 429, message: "Rate limit exceeded. Try again later." } },
+});
+
+app.post("/mcp", mcpLimiter, async (req, res) => {
+  try {
+    const server = createMcpServer();
+    const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+    res.on("close", () => {
+      transport.close();
+      server.close();
+    });
+    await server.connect(transport);
+    await transport.handleRequest(req, res, req.body);
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    console.error(`[mcp] request failed: ${detail}`);
+    res.status(500).json({ jsonrpc: "2.0", error: { code: -32000, message: `Internal error: ${detail}` } });
+  }
 });
 
 app.get("/health", (req, res) => {
