@@ -9,7 +9,7 @@
     "start": "tsx src/index.ts",
     "seed": "tsx src/seed.ts",
     "build": "tsc",
-    "test": "node --test test/"
+    "test": "node --test"
   },
   "predev": "npm run seed",
   "license": "ISC",

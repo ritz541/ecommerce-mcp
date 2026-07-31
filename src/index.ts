@@ -140,5 +140,5 @@ app.get("/health", (req, res) => {
   res.json({ status: "ok", timestamp: new Date().toISOString() });
 });
 
-const PORT = 8003;
+const PORT = Number(process.env.PORT ?? 8003);
 app.listen(PORT, "127.0.0.1", () => console.error(`MCP server on http://localhost:${PORT}/mcp`));
