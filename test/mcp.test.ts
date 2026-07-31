@@ -1,6 +1,6 @@
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { spawn, spawnSync } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -11,10 +11,49 @@ const PORT = Number(process.env.TEST_PORT ?? 8399);
 const BASE = `http://127.0.0.1:${PORT}`;
 const PROTOCOL_VERSION = "2025-06-18";
 
-let server;
+let server: ChildProcess | null = null;
+
+interface McpResponse {
+  id?: number;
+  result: {
+    content?: Array<{ type: string; text: string }>;
+    isError?: boolean;
+    serverInfo?: { name: string };
+    capabilities?: unknown;
+    tools?: Array<{ name: string }>;
+  };
+}
+
+interface OrderItem {
+  name: string;
+  qty: number;
+  price: number;
+}
+
+interface OrderDetail {
+  id: string;
+  customer: string;
+  email: string;
+  status: string;
+  items: OrderItem[];
+  total: number;
+  created: string;
+  tracking: string | null;
+  notes: string | null;
+}
+
+interface OrderSummary {
+  id: string;
+  customer: string;
+  email: string;
+  status: string;
+  total: number;
+  created: string;
+  tracking: string | null;
+}
 
 function startServer() {
-  return new Promise((resolve, reject) => {
+  return new Promise<ChildProcess>((resolve, reject) => {
     const child = spawn("npx", ["tsx", "src/index.ts"], {
       cwd: root,
       env: { ...process.env, PORT: String(PORT) },
@@ -45,7 +84,7 @@ function startServer() {
   });
 }
 
-async function mcpRequest(payload) {
+async function mcpRequest(payload: unknown): Promise<McpResponse> {
   const res = await fetch(`${BASE}/mcp`, {
     method: "POST",
     headers: {
@@ -59,10 +98,10 @@ async function mcpRequest(payload) {
   const text = await res.text();
   const dataLine = text.split("\n").find((line) => line.startsWith("data: "));
   assert.ok(dataLine, `expected an SSE data line, got: ${text}`);
-  return JSON.parse(dataLine.slice("data: ".length));
+  return JSON.parse(dataLine.slice("data: ".length)) as McpResponse;
 }
 
-async function callTool(name, args) {
+async function callTool(name: string, args: Record<string, unknown>): Promise<McpResponse> {
   return mcpRequest({
     jsonrpc: "2.0",
     id: Math.floor(Math.random() * 1e9),
@@ -71,9 +110,9 @@ async function callTool(name, args) {
   });
 }
 
-function parseResult(res) {
+function parseResult(res: McpResponse): unknown {
   assert.equal(res.result.content[0].type, "text");
-  return JSON.parse(res.result.content[0].text);
+  return JSON.parse(res.result.content[0].text) as unknown;
 }
 
 before(async () => {
@@ -114,14 +153,14 @@ test("tools/list exposes get_order and search_orders", async () => {
     method: "tools/list",
     params: {},
   });
-  const names = res.result.tools.map((tool) => tool.name);
+  const names = res.result.tools.map((tool: { name: string }) => tool.name);
   assert.ok(names.includes("get_order"));
   assert.ok(names.includes("search_orders"));
 });
 
 test("get_order returns order details", async () => {
   const res = await callTool("get_order", { orderId: "ORD-001" });
-  const data = parseResult(res);
+  const data = parseResult(res) as OrderDetail;
   assert.equal(data.id, "ORD-001");
   assert.equal(data.customer, "Alice Johnson");
   assert.equal(data.email, "alice@example.com");
@@ -134,14 +173,14 @@ test("get_order returns order details", async () => {
 test("get_order returns not found for unknown order", async () => {
   const res = await callTool("get_order", { orderId: "ORD-999" });
   assert.equal(res.result.isError, true);
-  const data = parseResult(res);
+  const data = parseResult(res) as { ok: boolean; message: string };
   assert.equal(data.ok, false);
   assert.match(data.message, /ORD-999 not found/i);
 });
 
 test("search_orders filters by status", async () => {
   const res = await callTool("search_orders", { status: "shipped" });
-  const data = parseResult(res);
+  const data = parseResult(res) as OrderSummary[];
   assert.ok(Array.isArray(data));
   assert.equal(data.length, 3);
   assert.ok(data.some((o) => o.id === "ORD-002"));
@@ -149,21 +188,21 @@ test("search_orders filters by status", async () => {
 
 test("search_orders with no matches returns an empty array", async () => {
   const res = await callTool("search_orders", { status: "shipped", customer: "zzz-nobody" });
-  const data = parseResult(res);
+  const data = parseResult(res) as OrderSummary[];
   assert.ok(Array.isArray(data));
   assert.equal(data.length, 0);
 });
 
 test("search_orders caps limit at 10", async () => {
   const res = await callTool("search_orders", { limit: 500 });
-  const data = parseResult(res);
+  const data = parseResult(res) as OrderSummary[];
   assert.ok(Array.isArray(data));
   assert.ok(data.length <= 10);
 });
 
 test("search_orders supports offset pagination", async () => {
-  const page1 = parseResult(await callTool("search_orders", { limit: 5, offset: 0 }));
-  const page2 = parseResult(await callTool("search_orders", { limit: 5, offset: 5 }));
+  const page1 = parseResult(await callTool("search_orders", { limit: 5, offset: 0 })) as OrderSummary[];
+  const page2 = parseResult(await callTool("search_orders", { limit: 5, offset: 5 })) as OrderSummary[];
   assert.equal(page1.length, 5);
   assert.equal(page2.length, 5);
   const ids1 = page1.map((o) => o.id);
@@ -173,7 +212,7 @@ test("search_orders supports offset pagination", async () => {
 });
 
 test("search_orders offset beyond results returns empty array", async () => {
-  const data = parseResult(await callTool("search_orders", { limit: 5, offset: 999 }));
+  const data = parseResult(await callTool("search_orders", { limit: 5, offset: 999 })) as OrderSummary[];
   assert.ok(Array.isArray(data));
   assert.equal(data.length, 0);
 });

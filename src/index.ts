@@ -33,7 +33,7 @@ function createMcpServer() {
     tools: [
       {
         name: "get_order",
-        description: "Look up a single order by ID (e.g. ORD-001). Returns the order as structured JSON: id, customer, email, status, items, total, created, tracking, notes.",
+        description: "Look up a single order by ID (e.g. ORD-001). Returns the order as structured JSON: id, customer, email, status, items, total, created, tracking, notes. Example call {orderId: 'ORD-004'} returns {id: 'ORD-004', customer: 'Dave Wilson', status: 'pending', items: [...]}. If the order is not found, returns {ok: false, message} with isError set to true.",
         inputSchema: {
           type: "object",
           properties: {
@@ -44,7 +44,7 @@ function createMcpServer() {
       },
       {
         name: "search_orders",
-        description: "Search orders by status, customer, email, date range. Returns a JSON array of matching orders, newest first. Paginate with limit (max 10) and offset.",
+        description: "Search orders by status, customer, email, date range. Returns a JSON array of matching orders, newest first; an empty array [] if nothing matches. Paginate with limit (max 10) and offset. Example call {status: 'delivered', limit: 5} returns [{id: 'ORD-010', customer: 'Jack Taylor', status: 'delivered', ...}]. If the request itself is invalid, returns {ok: false, message} with isError set to true.",
         inputSchema: {
           type: "object",
           properties: {
