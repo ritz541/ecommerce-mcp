@@ -33,7 +33,7 @@ function createMcpServer() {
     tools: [
       {
         name: "get_order",
-        description: "Look up a single order by ID (e.g. ORD-001). Returns customer, items, status, tracking, notes.",
+        description: "Look up a single order by ID (e.g. ORD-001). Returns the order as structured JSON: id, customer, email, status, items, total, created, tracking, notes.",
         inputSchema: {
           type: "object",
           properties: {
@@ -44,7 +44,7 @@ function createMcpServer() {
       },
       {
         name: "search_orders",
-        description: "Search orders by status, customer, email, date range. Returns list of matching orders.",
+        description: "Search orders by status, customer, email, date range. Returns a JSON array of matching orders, newest first. Paginate with limit (max 10) and offset.",
         inputSchema: {
           type: "object",
           properties: {
@@ -53,7 +53,8 @@ function createMcpServer() {
             email: { type: "string" },
             dateFrom: { type: "string" },
             dateTo: { type: "string" },
-            limit: { type: "number", default: 20 },
+            limit: { type: "number", minimum: 1, maximum: 10, default: 10 },
+            offset: { type: "number", minimum: 0, default: 0 },
           },
         },
       },
@@ -64,7 +65,10 @@ function createMcpServer() {
     const { name, arguments: args } = request.params;
 
     if (!args) {
-      return { content: [{ type: "text", text: "No arguments provided." }] };
+      return {
+        content: [{ type: "text", text: JSON.stringify({ ok: false, message: "No arguments provided." }) }],
+        isError: true,
+      };
     }
 
     try {
@@ -74,14 +78,25 @@ function createMcpServer() {
         const row = db.prepare(`SELECT id, customer, email, status, items, total, created, tracking, notes FROM orders WHERE id = ?`).get(orderId) as OrderRow | undefined;
         db.close();
 
-        if (!row) return { content: [{ type: "text", text: "Order not found." }] };
+        if (!row) {
+          return {
+            content: [{ type: "text", text: JSON.stringify({ ok: false, message: `Order ${orderId} not found.` }) }],
+            isError: true,
+          };
+        }
 
-        const items = JSON.parse(row.items) as Array<{ name: string; qty: number; price: number }>;
-        const itemLines = items.map(i => `  - ${i.name} x${i.qty} @ $${i.price.toFixed(2)} = $${(i.qty * i.price).toFixed(2)}`).join("\n");
-
-        let message = `Order: ${row.id}\nCustomer: ${row.customer} (${row.email})\nStatus: ${row.status}\nCreated: ${row.created}\nTracking: ${row.tracking ?? "N/A"}\nItems:\n${itemLines}\nTotal: $${row.total.toFixed(2)}`;
-        if (row.notes) message += `\nNotes: ${row.notes}`;
-        return { content: [{ type: "text", text: message }] };
+        const order = {
+          id: row.id,
+          customer: row.customer,
+          email: row.email,
+          status: row.status,
+          items: JSON.parse(row.items) as Array<{ name: string; qty: number; price: number }>,
+          total: row.total,
+          created: row.created,
+          tracking: row.tracking ?? null,
+          notes: row.notes ?? null,
+        };
+        return { content: [{ type: "text", text: JSON.stringify(order, null, 2) }] };
       }
 
       if (name === "search_orders") {
@@ -96,26 +111,36 @@ function createMcpServer() {
         if (typeof args.dateTo === "string") { clauses.push("created <= ?"); params.push(args.dateTo); }
 
         const where = clauses.length > 0 ? `WHERE ${clauses.join(" AND ")}` : "";
-        const limit = (typeof args.limit === "number" ? args.limit : 20);
-        const sql = `SELECT id, customer, email, status, total, created, tracking FROM orders ${where} ORDER BY created DESC LIMIT ?`;
-        params.push(limit);
+        const limit = Math.min(Math.max(typeof args.limit === "number" ? args.limit : 10, 1), 10);
+        const offset = typeof args.offset === "number" ? Math.max(args.offset, 0) : 0;
+        const sql = `SELECT id, customer, email, status, total, created, tracking FROM orders ${where} ORDER BY created DESC LIMIT ? OFFSET ?`;
+        params.push(limit, offset);
 
         const rows = db.prepare(sql).all(...params) as Array<{ id: string; customer: string; email: string; status: string; total: number; created: string; tracking: string | null }>;
         db.close();
 
-        if (rows.length === 0) return { content: [{ type: "text", text: "No orders found." }] };
-
-        let output = `Found ${rows.length} order(s):\nID          | Customer        | Status      | Total       | Date        | Tracking\n`;
-        for (const r of rows) {
-          output += `${r.id} | ${r.customer} | ${r.status} | $${r.total.toFixed(2)} | ${r.created} | ${r.tracking ?? "N/A"}\n`;
-        }
-        return { content: [{ type: "text", text: output }] };
+        const orders = rows.map(r => ({
+          id: r.id,
+          customer: r.customer,
+          email: r.email,
+          status: r.status,
+          total: r.total,
+          created: r.created,
+          tracking: r.tracking,
+        }));
+        return { content: [{ type: "text", text: JSON.stringify(orders, null, 2) }] };
       }
 
-      return { content: [{ type: "text", text: `Unknown tool: ${name}` }] };
+      return {
+        content: [{ type: "text", text: JSON.stringify({ ok: false, message: `Unknown tool: ${name}` }) }],
+        isError: true,
+      };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      return { content: [{ type: "text", text: `Error: ${msg}` }] };
+      return {
+        content: [{ type: "text", text: JSON.stringify({ ok: false, message: `Error: ${msg}` }) }],
+        isError: true,
+      };
     }
   });
 
