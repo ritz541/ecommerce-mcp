@@ -216,3 +216,10 @@ test("search_orders offset beyond results returns empty array", async () => {
   assert.ok(Array.isArray(data));
   assert.equal(data.length, 0);
 });
+
+test("search_orders offset pages deterministically (delivered, limit 1)", async () => {
+  const page1 = parseResult(await callTool("search_orders", { status: "delivered", limit: 1, offset: 0 })) as OrderSummary[];
+  const page2 = parseResult(await callTool("search_orders", { status: "delivered", limit: 1, offset: 1 })) as OrderSummary[];
+  assert.equal(page1[0].id, "ORD-015");
+  assert.equal(page2[0].id, "ORD-010");
+});

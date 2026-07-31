@@ -32,6 +32,8 @@ Both tools return **structured JSON** (a JSON string in the MCP `text` content b
 
 - **Null contract:** fields are always present. When there is no value (e.g. `tracking`, `notes`), they are `null` — never omitted.
 - **Errors:** every error response is `{ "ok": false, "message": "..." }` with the MCP `isError` flag set to `true`. On success `isError` is unset.
+- **Unknown parameters:** unrecognized arguments are silently ignored (never an error).
+- **Sort order:** `search_orders` results are sorted by `created` descending, with `id` descending as a tiebreaker — the sort is deterministic and stable for pagination.
 - **IDs:** order IDs look like `ORD-001` (`^ORD-\d{3}$`).
 
 ### `get_order(orderId)`

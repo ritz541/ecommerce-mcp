@@ -33,7 +33,7 @@ function createMcpServer() {
     tools: [
       {
         name: "get_order",
-        description: "Look up a single order by ID (e.g. ORD-001). Returns the order as structured JSON: id, customer, email, status, items, total, created, tracking, notes. Example call {orderId: 'ORD-004'} returns {id: 'ORD-004', customer: 'Dave Wilson', status: 'pending', items: [...]}. If the order is not found, returns {ok: false, message} with isError set to true.",
+        description: "Look up a single order by ID (e.g. ORD-001) and return its full details: items, totals, tracking, notes.",
         inputSchema: {
           type: "object",
           properties: {
@@ -44,7 +44,7 @@ function createMcpServer() {
       },
       {
         name: "search_orders",
-        description: "Search orders by status, customer, email, date range. Returns a JSON array of matching orders, newest first; an empty array [] if nothing matches. Paginate with limit (max 10) and offset. Example call {status: 'delivered', limit: 5} returns [{id: 'ORD-010', customer: 'Jack Taylor', status: 'delivered', ...}]. If the request itself is invalid, returns {ok: false, message} with isError set to true.",
+        description: "Search orders by status, customer, email, or date range. Returns up to 10 matches, newest first; paginate with limit and offset.",
         inputSchema: {
           type: "object",
           properties: {
@@ -113,7 +113,7 @@ function createMcpServer() {
         const where = clauses.length > 0 ? `WHERE ${clauses.join(" AND ")}` : "";
         const limit = Math.min(Math.max(typeof args.limit === "number" ? args.limit : 10, 1), 10);
         const offset = typeof args.offset === "number" ? Math.max(args.offset, 0) : 0;
-        const sql = `SELECT id, customer, email, status, total, created, tracking FROM orders ${where} ORDER BY created DESC LIMIT ? OFFSET ?`;
+        const sql = `SELECT id, customer, email, status, total, created, tracking FROM orders ${where} ORDER BY created DESC, id DESC LIMIT ? OFFSET ?`;
         params.push(limit, offset);
 
         const rows = db.prepare(sql).all(...params) as Array<{ id: string; customer: string; email: string; status: string; total: number; created: string; tracking: string | null }>;
