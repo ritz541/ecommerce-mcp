@@ -1,3 +1,4 @@
+import fs from "fs";
 import Database from "better-sqlite3";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -24,6 +25,7 @@ const orders = [
 ];
 
 function main() {
+  fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
   const db = new Database(DB_PATH);
 
   db.exec(`DROP TABLE IF EXISTS orders;

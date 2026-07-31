@@ -1,4 +1,4 @@
-name: Deploy ecommerce-mcp
+name: Build and Deploy ecommerce-mcp
 
 on:
   push:
@@ -18,16 +18,25 @@ jobs:
       - run: npm run build
       - run: npm run seed
 
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    if: ${{ env.VPS_HOST != '' && env.VPS_SSH_KEY != '' }}
+    env:
+      VPS_HOST: ${{ secrets.VPS_HOST }}
+      VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+    steps:
       - name: Deploy to VPS
         uses: appleboy/ssh-action@v1.0.3
         with:
-          host: ${{ secrets.VPS_HOST }}
+          host: ${{ env.VPS_HOST }}
           username: root
-          key: ${{ secrets.VPS_SSH_KEY }}
+          key: ${{ env.VPS_SSH_KEY }}
           script: |
             cd ecommerce-mcp || exit 1
-            git pull origin master
+            git fetch origin master
+            git reset --hard origin/master
             npm ci
             npm run build
             npm run seed
-            systemctl restart ecommerce-mcp || true
+            systemctl restart ecommerce-mcp

@@ -11,10 +11,12 @@
     "build": "tsc",
     "test": "node --test test/"
   },
+  "predev": "npm run seed",
   "license": "ISC",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
-    "better-sqlite3": "^13.0.2"
+    "better-sqlite3": "^13.0.2",
+    "express": "^5.2.1"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",
