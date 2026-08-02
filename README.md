@@ -6,21 +6,27 @@ MCP server for commerce-operations self-service. Lets an AI agent look up order 
 
 The server is already hosted. Point an MCP client at the endpoint above and it will discover and call the tools below.
 
+## Tools at a glance
+
+| Tool | Purpose | Key inputs |
+|---|---|---|
+| `get_order` | Full order details, plus payment status, customer risk score, carrier status, order age, and refund eligibility | `orderId` |
+| `search_orders` | Filtered, paginated order search, newest first | optional filters, `limit`, `offset` |
+| `refund_order` | Auto-refund when the order meets the policy, otherwise create a manager-approval escalation | `orderId`, `reason` |
+| `get_audit_log` | Durable before/after trail of every refund/escalation action for an order | `orderId` |
+
+Detailed docs for each tool below.
+
 ## Connecting an agent harness
 
-### Claude Code CLI
+Any MCP client that supports Streamable HTTP can connect. The flow is the same across harnesses (verified with **oh-my-pi** and **Kimi Code**):
 
-```bash
-claude mcp add --transport http ecommerce-mcp https://mcp.chavanpatil.com/mcp
-```
+1. Open the harness and run its add-MCP-server command (e.g. `/mcp add` on oh-my-pi or Kimi Code).
+2. Give the server a name, e.g. `ecommerce-mcp`.
+3. Enter the endpoint URL: `https://mcp.chavanpatil.com/mcp`.
+4. The harness connects, detects that no authentication is required, and reads the available tools automatically.
 
-Verify the connection:
-
-```bash
-claude mcp list
-```
-
-Then ask Claude to use the tools, e.g.:
+Then ask the agent to use the tools, e.g.:
 
 > Use the ecommerce-mcp tools to look up order ORD-001 and summarize it.
 
